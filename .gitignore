@@ -43,3 +43,4 @@ dist
 .github/prompts/*.local.prompt.md
 .agents/skills/.local/
 .github/skills/.local/
+src/vs/code/electron-main/myvscode.code-workspace

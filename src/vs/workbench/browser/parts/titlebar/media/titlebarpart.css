@@ -10,6 +10,235 @@
 	box-shadow: var(--vscode-shadow-md);
 }
 
+/* Mode Switch Container */
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-left > .mode-switch-container {
+	display: flex;
+	align-items: center;
+	height: 100%;
+	flex-shrink: 0;
+	position: relative;
+	z-index: 2500;
+	-webkit-app-region: no-drag;
+	padding: 0 2px 0 8px;
+	gap: 2px;
+	order: 0; /* ensure it comes first in titlebar-left */
+}
+
+.monaco-workbench.mac .part.titlebar > .titlebar-container > .titlebar-left > .mode-switch-container {
+	padding: 0 2px 0 72px; /* account for macOS traffic light buttons */
+}
+
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-left > .mode-switch-container > .mode-switch-button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	height: 22px;
+	padding: 0 10px;
+	border-radius: 4px;
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+	color: var(--vscode-titleBar-activeForeground);
+	opacity: 0.7;
+	transition: all 0.15s ease;
+	white-space: nowrap;
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-app-region: no-drag;
+	border: 1px solid transparent;
+}
+
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-left > .mode-switch-container > .mode-switch-button:hover {
+	opacity: 0.9;
+	background-color: rgba(255, 255, 255, 0.1);
+}
+
+.monaco-workbench .part.titlebar.light > .titlebar-container > .titlebar-left > .mode-switch-container > .mode-switch-button:hover {
+	background-color: rgba(0, 0, 0, 0.06);
+}
+
+.monaco-workbench .part.titlebar > .titlebar-container > .titlebar-left > .mode-switch-container > .mode-switch-button.active {
+	opacity: 1;
+	background-color: rgba(255, 255, 255, 0.15);
+	border-color: rgba(255, 255, 255, 0.2);
+}
+
+.monaco-workbench .part.titlebar.light > .titlebar-container > .titlebar-left > .mode-switch-container > .mode-switch-button.active {
+	background-color: rgba(0, 0, 0, 0.08);
+	border-color: rgba(0, 0, 0, 0.15);
+}
+
+.monaco-workbench .part.titlebar.inactive > .titlebar-container > .titlebar-left > .mode-switch-container > .mode-switch-button {
+	opacity: 0.5;
+}
+
+/* Model Mode — hide all parts except titlebar when in model management mode */
+.monaco-workbench.model-mode .part:not(.titlebar) {
+	visibility: hidden !important;
+}
+
+/* Ensure titlebar and its children remain fully visible in model mode */
+.monaco-workbench.model-mode .part.titlebar,
+.monaco-workbench.model-mode .part.titlebar * {
+	visibility: visible !important;
+}
+
+/* Model Management Page */
+.monaco-workbench > .model-management-page {
+	position: absolute;
+	top: 35px;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	background-color: var(--vscode-editor-background);
+	color: var(--vscode-editor-foreground);
+	overflow-y: auto;
+	z-index: 999;
+	padding: 60px 20px;
+}
+
+.monaco-workbench > .model-management-page .model-page-header {
+	text-align: center;
+	margin-bottom: 48px;
+}
+
+.monaco-workbench > .model-management-page .model-page-title {
+	font-size: 32px;
+	font-weight: 700;
+	margin: 0 0 10px 0;
+	color: var(--vscode-editor-foreground);
+	letter-spacing: -0.5px;
+}
+
+.monaco-workbench > .model-management-page .model-page-subtitle {
+	font-size: 14px;
+	opacity: 0.65;
+	margin: 0;
+}
+
+/* OpenCode Status Card */
+.monaco-workbench > .model-management-page .opencode-status-card {
+	display: flex;
+	align-items: center;
+	gap: 20px;
+	background-color: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-sideBar-border, rgba(128,128,128,0.2)));
+	border-radius: 12px;
+	padding: 24px 32px;
+	max-width: 520px;
+	width: 100%;
+	margin-bottom: 24px;
+}
+
+.monaco-workbench > .model-management-page .opencode-status-icon {
+	font-size: 40px;
+	flex-shrink: 0;
+	width: 56px;
+	height: 56px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 12px;
+}
+
+.monaco-workbench > .model-management-page .opencode-status-icon.checking {
+	background-color: rgba(255, 193, 7, 0.12);
+}
+
+.monaco-workbench > .model-management-page .opencode-status-icon.installed {
+	background-color: rgba(40, 167, 69, 0.12);
+}
+
+.monaco-workbench > .model-management-page .opencode-status-icon.not-installed {
+	background-color: rgba(220, 53, 69, 0.12);
+}
+
+.monaco-workbench > .model-management-page .opencode-status-info {
+	flex: 1;
+}
+
+.monaco-workbench > .model-management-page .opencode-status-label {
+	font-size: 18px;
+	font-weight: 600;
+	margin-bottom: 4px;
+}
+
+.monaco-workbench > .model-management-page .opencode-status-detail {
+	font-size: 13px;
+	opacity: 0.7;
+	line-height: 1.4;
+}
+
+/* Install Button */
+.monaco-workbench > .model-management-page .opencode-install-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 10px 32px;
+	font-size: 14px;
+	font-weight: 600;
+	color: #ffffff;
+	background-color: var(--vscode-button-background, #0078d4);
+	border: none;
+	border-radius: 6px;
+	cursor: pointer;
+	transition: background-color 0.15s ease, transform 0.1s ease;
+	margin-bottom: 24px;
+}
+
+.monaco-workbench > .model-management-page .opencode-install-btn:hover:not(:disabled) {
+	background-color: var(--vscode-button-hoverBackground, #106ebe);
+	transform: translateY(-1px);
+}
+
+.monaco-workbench > .model-management-page .opencode-install-btn:disabled {
+	opacity: 0.6;
+	cursor: not-allowed;
+}
+
+/* Hint Text */
+.monaco-workbench > .model-management-page .opencode-hint-text {
+	font-size: 12px;
+	opacity: 0.5;
+	margin: 0;
+}
+
+/* Log Output Area */
+.monaco-workbench > .model-management-page .opencode-log-area {
+	max-width: 520px;
+	width: 100%;
+	margin-bottom: 16px;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-sideBar-border, rgba(128,128,128,0.2)));
+	border-radius: 8px;
+	overflow: hidden;
+	background-color: var(--vscode-terminal-background, var(--vscode-editor-background));
+}
+
+.monaco-workbench > .model-management-page .opencode-log-header {
+	padding: 8px 16px;
+	font-size: 12px;
+	font-weight: 600;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-sideBar-border, rgba(128,128,128,0.15)));
+	background-color: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+	opacity: 0.8;
+}
+
+.monaco-workbench > .model-management-page .opencode-log-content {
+	padding: 12px 16px;
+	font-family: var(--vscode-editor-font-family, 'Menlo', 'Monaco', 'Courier New', monospace);
+	font-size: 12px;
+	line-height: 1.6;
+	margin: 0;
+	max-height: 300px;
+	overflow-y: auto;
+	white-space: pre-wrap;
+	word-break: break-all;
+	color: var(--vscode-terminal-foreground, var(--vscode-editor-foreground));
+}
+
 .monaco-workbench.mac .part.titlebar {
 	flex-direction: row-reverse;
 }

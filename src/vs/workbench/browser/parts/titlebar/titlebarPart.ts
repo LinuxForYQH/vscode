@@ -55,6 +55,7 @@ import { IHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegate.
 import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
 import { safeIntl } from '../../../../base/common/date.js';
 import { IsCompactTitleBarContext, TitleBarVisibleContext } from '../../../common/contextkeys.js';
+import { ITerminalService } from '../../../contrib/terminal/browser/terminal.js';
 
 export interface ITitleVariable {
 	readonly name: string;
@@ -257,6 +258,12 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 	private leftContent!: HTMLElement;
 	private centerContent!: HTMLElement;
 	private rightContent!: HTMLElement;
+
+	// Mode switch buttons
+	private modeSwitchContainer!: HTMLElement;
+	private vscodeModeButton!: HTMLElement;
+	private modelModeButton!: HTMLElement;
+	private currentMode: 'vscode' | 'model' = 'vscode';
 
 	protected readonly customMenubar = this._register(new MutableDisposable<CustomMenubarControl>());
 	protected appIcon: HTMLElement | undefined;
@@ -462,6 +469,28 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 
 		// Draggable region that we can manipulate for #52522
 		this.dragRegion = prepend(this.rootContainer, $('div.titlebar-drag-region'));
+
+		// Mode Switch Buttons (VSCode / Model) — placed inside rootContainer above drag region via z-index
+		this.modeSwitchContainer = prepend(this.leftContent, $('div.mode-switch-container'));
+
+		this.vscodeModeButton = append(this.modeSwitchContainer, $('div.mode-switch-button.active'));
+		this.vscodeModeButton.textContent = 'VSCode';
+		this.vscodeModeButton.setAttribute('role', 'button');
+		this.vscodeModeButton.setAttribute('aria-label', 'VSCode Mode');
+		this.vscodeModeButton.tabIndex = 0;
+
+		this.modelModeButton = append(this.modeSwitchContainer, $('div.mode-switch-button'));
+		this.modelModeButton.textContent = 'Model';
+		this.modelModeButton.setAttribute('role', 'button');
+		this.modelModeButton.setAttribute('aria-label', 'Model Management');
+		this.modelModeButton.tabIndex = 0;
+
+		this._register(addDisposableListener(this.vscodeModeButton, EventType.CLICK, () => {
+			this.switchMode('vscode');
+		}));
+		this._register(addDisposableListener(this.modelModeButton, EventType.CLICK, () => {
+			this.switchMode('model');
+		}));
 
 		// Menubar: install a custom menu bar depending on configuration
 		if (
@@ -883,6 +912,318 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 
 		const hasCenter = this.isCommandCenterVisible || this.title.textContent !== '';
 		this.rootContainer.classList.toggle('has-center', hasCenter);
+	}
+
+	private switchMode(mode: 'vscode' | 'model'): void {
+		if (this.currentMode === mode) {
+			return;
+		}
+
+		this.currentMode = mode;
+
+		// Update button states
+		if (mode === 'vscode') {
+			this.vscodeModeButton.classList.add('active');
+			this.modelModeButton.classList.remove('active');
+		} else {
+			this.vscodeModeButton.classList.remove('active');
+			this.modelModeButton.classList.add('active');
+		}
+
+		// Toggle workbench visibility and model management page
+		// Use a CSS class on the workbench container to control visibility via CSS rules,
+		// instead of manipulating DOM styles directly (which can conflict with the grid layout system).
+		const workbenchContainer = this.element.closest('.monaco-workbench') as HTMLElement;
+		if (!workbenchContainer) {
+			return;
+		}
+
+		if (mode === 'model') {
+			workbenchContainer.classList.add('model-mode');
+
+			// Create and show model management page
+			let modelPage = workbenchContainer.querySelector('.model-management-page') as HTMLElement;
+			if (!modelPage) {
+				modelPage = this.createModelManagementPage(workbenchContainer);
+			}
+			modelPage.style.display = 'flex';
+		} else {
+			workbenchContainer.classList.remove('model-mode');
+
+			// Hide model management page
+			const modelPage = workbenchContainer.querySelector('.model-management-page') as HTMLElement;
+			if (modelPage) {
+				modelPage.style.display = 'none';
+			}
+		}
+	}
+
+	private createModelManagementPage(container: HTMLElement): HTMLElement {
+		const page = document.createElement('div');
+		page.className = 'model-management-page';
+
+		// Header
+		const header = document.createElement('div');
+		header.className = 'model-page-header';
+
+		const title = document.createElement('h1');
+		title.className = 'model-page-title';
+		title.textContent = 'OpenCode';
+		header.appendChild(title);
+
+		const subtitle = document.createElement('p');
+		subtitle.className = 'model-page-subtitle';
+		subtitle.textContent = '终端 AI 编程助手 — 检查安装状态并一键安装';
+		header.appendChild(subtitle);
+
+		page.appendChild(header);
+
+		// Status card
+		const statusCard = document.createElement('div');
+		statusCard.className = 'opencode-status-card';
+
+		const statusIcon = document.createElement('div');
+		statusIcon.className = 'opencode-status-icon checking';
+		statusIcon.textContent = '⏳';
+		statusCard.appendChild(statusIcon);
+
+		const statusInfo = document.createElement('div');
+		statusInfo.className = 'opencode-status-info';
+
+		const statusLabel = document.createElement('div');
+		statusLabel.className = 'opencode-status-label';
+		statusLabel.textContent = '检测中...';
+		statusInfo.appendChild(statusLabel);
+
+		const statusDetail = document.createElement('div');
+		statusDetail.className = 'opencode-status-detail';
+		statusDetail.textContent = '正在检查 opencode 是否已安装';
+		statusInfo.appendChild(statusDetail);
+
+		statusCard.appendChild(statusInfo);
+		page.appendChild(statusCard);
+
+		// Install button (hidden initially)
+		const installBtn = document.createElement('button');
+		installBtn.className = 'opencode-install-btn';
+		installBtn.textContent = '安装 OpenCode';
+		installBtn.style.display = 'none';
+		page.appendChild(installBtn);
+
+		// Log output area (hidden initially)
+		const logArea = document.createElement('div');
+		logArea.className = 'opencode-log-area';
+		logArea.style.display = 'none';
+
+		const logHeader = document.createElement('div');
+		logHeader.className = 'opencode-log-header';
+		logHeader.textContent = '安装日志';
+		logArea.appendChild(logHeader);
+
+		const logContent = document.createElement('pre');
+		logContent.className = 'opencode-log-content';
+		logArea.appendChild(logContent);
+
+		page.appendChild(logArea);
+
+		// Hint text (hidden initially)
+		const hintText = document.createElement('p');
+		hintText.className = 'opencode-hint-text';
+		hintText.textContent = '点击按钮后将在当前页面执行安装命令';
+		hintText.style.display = 'none';
+		page.appendChild(hintText);
+
+		container.appendChild(page);
+
+		// Check opencode installation status
+		this.checkOpencodeInstallation(statusIcon, statusLabel, statusDetail, installBtn, hintText);
+
+		// Install button click handler — execute install command in-page
+		installBtn.addEventListener('click', () => {
+			this.installOpencodeInPage(statusIcon, statusLabel, statusDetail, installBtn, hintText, logArea, logContent);
+		});
+
+		return page;
+	}
+
+	private async checkOpencodeInstallation(
+		statusIcon: HTMLElement,
+		statusLabel: HTMLElement,
+		statusDetail: HTMLElement,
+		installBtn: HTMLElement,
+		hintText: HTMLElement
+	): Promise<void> {
+		try {
+			const terminalService = this.instantiationService.invokeFunction(accessor =>
+				accessor.get(ITerminalService)
+			);
+
+			// Create a hidden terminal to check opencode version
+			const instance = await terminalService.createTerminal({
+				config: { name: 'Check OpenCode' },
+			});
+
+			await instance.processReady;
+
+			let outputData = '';
+			let resolved = false;
+
+			const resolveCheck = (installed: boolean, version?: string) => {
+				if (resolved) {
+					return;
+				}
+				resolved = true;
+				dataDisposable.dispose();
+				exitDisposable.dispose();
+				instance.dispose();
+
+				if (installed) {
+					statusIcon.textContent = '✅';
+					statusIcon.className = 'opencode-status-icon installed';
+					statusLabel.textContent = '已安装';
+					statusDetail.textContent = `OpenCode 版本: ${version || '未知'}`;
+					installBtn.style.display = 'none';
+					hintText.style.display = 'none';
+				} else {
+					statusIcon.textContent = '❌';
+					statusIcon.className = 'opencode-status-icon not-installed';
+					statusLabel.textContent = '未安装';
+					statusDetail.textContent = 'OpenCode 尚未安装，点击下方按钮一键安装';
+					installBtn.style.display = 'inline-flex';
+					hintText.style.display = 'block';
+				}
+			};
+
+			const dataDisposable = instance.onData((data: string) => {
+				// Collect output, strip ANSI codes
+				outputData += data.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+			});
+
+			const exitDisposable = instance.onExit(() => {
+				// Parse the output for version info
+				const versionMatch = outputData.match(/\d+\.\d+[\.\d]*/);
+				if (versionMatch && !outputData.includes('not found') && !outputData.includes('command not found')) {
+					resolveCheck(true, versionMatch[0]);
+				} else {
+					resolveCheck(false);
+				}
+			});
+
+			// Set a timeout in case the terminal hangs
+			setTimeout(() => {
+				if (!resolved) {
+					resolveCheck(false);
+				}
+			}, 8000);
+
+			// Send the check command and immediately exit
+			await instance.sendText('opencode --version; exit', true);
+		} catch {
+			statusIcon.textContent = '❌';
+			statusIcon.className = 'opencode-status-icon not-installed';
+			statusLabel.textContent = '未安装';
+			statusDetail.textContent = 'OpenCode 尚未安装，点击下方按钮一键安装';
+			installBtn.style.display = 'inline-flex';
+			hintText.style.display = 'block';
+		}
+	}
+
+	private async installOpencodeInPage(
+		statusIcon: HTMLElement,
+		statusLabel: HTMLElement,
+		statusDetail: HTMLElement,
+		installBtn: HTMLElement,
+		hintText: HTMLElement,
+		logArea: HTMLElement,
+		logContent: HTMLElement
+	): Promise<void> {
+		try {
+			// Update UI to installing state
+			(installBtn as HTMLButtonElement).disabled = true;
+			installBtn.textContent = '安装中...';
+			statusIcon.textContent = '⏳';
+			statusIcon.className = 'opencode-status-icon checking';
+			statusLabel.textContent = '安装中';
+			statusDetail.textContent = '正在执行安装命令...';
+			hintText.style.display = 'none';
+
+			// Show log area
+			logArea.style.display = 'block';
+			logContent.textContent = '$ curl -fsSL https://opencode.ai/install | bash\n';
+
+			const terminalService = this.instantiationService.invokeFunction(accessor =>
+				accessor.get(ITerminalService)
+			);
+
+			// Create a terminal instance in the background (don't switch to vscode mode)
+			const instance = await terminalService.createTerminal({
+				config: { name: 'Install OpenCode' },
+			});
+
+			await instance.processReady;
+
+			const appendLog = (text: string) => {
+				// Filter out terminal control sequences for cleaner display
+				const cleanText = text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+				if (cleanText.trim() || cleanText.includes('\n')) {
+					logContent.textContent += cleanText;
+					// Auto scroll to bottom
+					logContent.scrollTop = logContent.scrollHeight;
+				}
+			};
+
+			// Listen for terminal output data
+			const dataDisposable = instance.onData((data: string) => {
+				appendLog(data);
+			});
+
+			// Listen for terminal exit
+			const exitDisposable = instance.onExit((exitCodeOrError) => {
+				dataDisposable.dispose();
+				exitDisposable.dispose();
+
+				const exitCode = typeof exitCodeOrError === 'number' ? exitCodeOrError : undefined;
+
+				if (exitCode === 0 || exitCode === undefined) {
+					// Check if opencode is actually installed after the script runs
+					appendLog('\n✅ 安装命令已执行完成\n');
+					statusIcon.textContent = '✅';
+					statusIcon.className = 'opencode-status-icon installed';
+					statusLabel.textContent = '安装完成';
+					statusDetail.textContent = 'OpenCode 安装命令已执行，请重新检测安装状态';
+					installBtn.style.display = 'none';
+				} else {
+					appendLog(`\n❌ 安装失败 (退出码: ${exitCode})\n`);
+					statusIcon.textContent = '❌';
+					statusIcon.className = 'opencode-status-icon not-installed';
+					statusLabel.textContent = '安装失败';
+					statusDetail.textContent = `安装进程退出码: ${exitCode}，请查看日志了解详情`;
+					(installBtn as HTMLButtonElement).disabled = false;
+					installBtn.textContent = '重试安装';
+				}
+
+				// Dispose the terminal instance after completion
+				instance.dispose();
+			});
+
+			// Send the install command
+			await instance.sendText('curl -fsSL https://opencode.ai/install | bash', true);
+			// Send exit after install so the terminal closes and triggers onExit
+			// Use a small delay to allow the command to start
+			setTimeout(() => {
+				instance.sendText('exit', true);
+			}, 500);
+
+		} catch (err) {
+			logContent.textContent += `\n❌ 错误: ${err}\n`;
+			statusIcon.textContent = '❌';
+			statusIcon.className = 'opencode-status-icon not-installed';
+			statusLabel.textContent = '安装失败';
+			statusDetail.textContent = '执行安装命令时发生错误，请手动在终端中执行: curl -fsSL https://opencode.ai/install | bash';
+			(installBtn as HTMLButtonElement).disabled = false;
+			installBtn.textContent = '重试安装';
+			installBtn.style.display = 'inline-flex';
+		}
 	}
 
 	focus(): void {
