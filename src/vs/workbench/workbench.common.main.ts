@@ -214,6 +214,9 @@ import './contrib/chat/browser/chatSessions/chatSessions.contribution.js';
 import './contrib/chat/browser/contextContrib/chatContext.contribution.js';
 import './contrib/imageCarousel/browser/imageCarousel.contribution.js';
 
+// Built-in AI (Inline Completions + Chat Model)
+import './contrib/inlineAI/browser/inlineAI.contribution.js';
+
 // Interactive
 import './contrib/interactive/browser/interactive.contribution.js';
 

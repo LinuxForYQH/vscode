@@ -5,7 +5,7 @@
 
 import { WorkbenchActionExecutedClassification, WorkbenchActionExecutedEvent } from '../../../../../base/common/actions.js';
 import { raceTimeout, timeout } from '../../../../../base/common/async.js';
-import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../../base/common/errorMessage.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
@@ -31,7 +31,7 @@ import { ChatRequestAgentPart, ChatRequestToolPart } from '../../common/requestP
 import { IChatProgress, IChatService } from '../../common/chatService/chatService.js';
 import { IChatRequestToolEntry } from '../../common/attachments/chatVariableEntries.js';
 import { ChatAgentLocation, ChatConfiguration, ChatModeKind } from '../../common/constants.js';
-import { ILanguageModelsService } from '../../common/languageModels.js';
+import { ChatMessageRole, ILanguageModelsService } from '../../common/languageModels.js';
 import { CHAT_OPEN_ACTION_ID, CHAT_SETUP_ACTION_ID } from '../actions/chatActions.js';
 import { ChatViewId, IChatWidgetService } from '../chat.js';
 import { IViewsService } from '../../../../services/views/common/viewsService.js';
@@ -55,6 +55,13 @@ import { IDefaultAccountService } from '../../../../../platform/defaultAccount/c
 import { IHostService } from '../../../../services/host/browser/host.js';
 import { IOutputService } from '../../../../services/output/common/output.js';
 import { IExtensionsWorkbenchService } from '../../../extensions/common/extensions.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
+import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
+import { dirname } from '../../../../../base/common/resources.js';
+import { IInlineAIToolDefinition } from '../../../inlineAI/browser/inlineAILanguageModelProvider.js';
+import { IChatMessage, IChatResponseToolUsePart } from '../../common/languageModels.js';
 
 const defaultChat = {
 	extensionId: product.defaultChatAgent?.extensionId ?? '',
@@ -200,6 +207,7 @@ export class SetupAgent extends Disposable implements IChatAgentImplementation {
 		@IOutputService private readonly outputService: IOutputService,
 		@IExtensionsWorkbenchService private readonly extensionsWorkbenchService: IExtensionsWorkbenchService,
 		@ICommandService private readonly commandService: ICommandService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 
@@ -255,6 +263,13 @@ export class SetupAgent extends Disposable implements IChatAgentImplementation {
 	}
 
 	private async doInvoke(request: IChatAgentRequest, progress: (part: IChatProgress) => void, chatService: IChatService, languageModelsService: ILanguageModelsService, chatWidgetService: IChatWidgetService, chatAgentService: IChatAgentService, languageModelToolsService: ILanguageModelToolsService, defaultAccountService: IDefaultAccountService): Promise<IChatAgentResult> {
+		// If user has configured an inlineAI API key, skip the Copilot sign-in / setup flow
+		// and directly invoke the built-in AI language model to handle the chat request.
+		const inlineAIApiKey = this.configurationService.getValue<string>('inlineAI.apiKey');
+		if (inlineAIApiKey) {
+			return this.doInvokeWithInlineAI(request, progress, languageModelsService);
+		}
+
 		if (
 			!this.context.state.installed ||									// Extension not installed: run setup to install
 			this.context.state.disabled ||										// Extension disabled: run setup to enable
@@ -285,6 +300,373 @@ export class SetupAgent extends Disposable implements IChatAgentImplementation {
 		});
 
 		await this.forwardRequestToChat(requestModel, progress, chatService, languageModelsService, chatAgentService, chatWidgetService, languageModelToolsService);
+
+		return {};
+	}
+
+	private async doInvokeWithInlineAI(request: IChatAgentRequest, progress: (part: IChatProgress) => void, languageModelsService: ILanguageModelsService): Promise<IChatAgentResult> {
+		progress({
+			kind: 'progressMessage',
+			content: new MarkdownString(localize('inlineAIThinking', "Thinking...")),
+			shimmer: true,
+		});
+
+		// Find the inlineAI model identifier from registered language models
+		let modelId: string | undefined;
+		for (const id of languageModelsService.getLanguageModelIds()) {
+			if (id.startsWith('inlineAI:')) {
+				modelId = id;
+				break;
+			}
+		}
+
+		// If model not found yet, trigger resolution and retry
+		if (!modelId) {
+			this.logService.info('[chat setup] InlineAI model not in cache, triggering resolution...');
+			try {
+				const models = await languageModelsService.selectLanguageModels({ vendor: 'inlineAI' });
+				if (models.length > 0) {
+					modelId = models[0];
+				}
+			} catch (e) {
+				this.logService.warn('[chat setup] Failed to resolve inlineAI models:', e);
+			}
+		}
+
+		if (!modelId) {
+			this.logService.error('[chat setup] InlineAI language model not found among registered models.');
+			progress({
+				kind: 'warning',
+				content: new MarkdownString(localize('inlineAIModelNotFound', "Built-in AI model is not ready. Please check that your API key is configured correctly and try again."))
+			});
+			return {};
+		}
+
+		const cts = new CancellationTokenSource();
+		this._register(toDisposable(() => cts.dispose(true)));
+
+		// Get workspace folder for file operations
+		const workspaceContextService = this.instantiationService.invokeFunction(accessor => accessor.get(IWorkspaceContextService));
+		const fileService = this.instantiationService.invokeFunction(accessor => accessor.get(IFileService));
+		const workspaceFolders = workspaceContextService.getWorkspace().folders;
+		const workspaceRoot = workspaceFolders.length > 0 ? workspaceFolders[0].uri : undefined;
+
+		// Define available tools
+		const toolDefinitions: IInlineAIToolDefinition[] = [
+			{
+				name: 'create_file',
+				description: 'Create a new file in the workspace with the given content. Use this when the user asks to create, generate, or scaffold files.',
+				parameters: {
+					type: 'object',
+					properties: {
+						path: { type: 'string', description: 'Relative file path from workspace root (e.g. "src/utils/helper.ts")' },
+						content: { type: 'string', description: 'Full content of the file to create' },
+					},
+					required: ['path', 'content'],
+				},
+			},
+			{
+				name: 'edit_file',
+				description: 'Replace content in an existing file. Provide the file path and the new full content to replace the entire file.',
+				parameters: {
+					type: 'object',
+					properties: {
+						path: { type: 'string', description: 'Relative file path from workspace root' },
+						content: { type: 'string', description: 'New full content of the file' },
+					},
+					required: ['path', 'content'],
+				},
+			},
+			{
+				name: 'read_file',
+				description: 'Read the content of a file in the workspace.',
+				parameters: {
+					type: 'object',
+					properties: {
+						path: { type: 'string', description: 'Relative file path from workspace root' },
+					},
+					required: ['path'],
+				},
+			},
+			{
+				name: 'list_files',
+				description: 'List files and directories at a given path in the workspace.',
+				parameters: {
+					type: 'object',
+					properties: {
+						path: { type: 'string', description: 'Relative directory path from workspace root. Use "" or "." for workspace root.' },
+					},
+					required: ['path'],
+				},
+			},
+		];
+
+		try {
+			// Build initial system prompt
+			const systemPrompt = [
+				'You are a helpful AI coding assistant integrated into VS Code.',
+				'You can create, edit, and read files in the user\'s workspace using the provided tools.',
+				'When the user asks you to create files, generate code, or make changes, use the appropriate tools.',
+				'Always use the tools to create or edit files rather than just showing code in text.',
+				workspaceRoot ? `The workspace root is: ${workspaceRoot.fsPath}` : 'No workspace folder is open.',
+				'File paths should be relative to the workspace root.',
+			].join('\n');
+
+			// Conversation messages for the agent loop
+			const conversationMessages: IChatMessage[] = [
+				{
+					role: ChatMessageRole.System,
+					content: [{ type: 'text' as const, value: systemPrompt }],
+				},
+				{
+					role: ChatMessageRole.User,
+					content: [{ type: 'text' as const, value: request.message }],
+				},
+			];
+
+			const MAX_TOOL_ITERATIONS = 15;
+			let iteration = 0;
+
+			while (iteration < MAX_TOOL_ITERATIONS) {
+				iteration++;
+
+				if (cts.token.isCancellationRequested) {
+					break;
+				}
+
+				// Send request to LLM with tools
+				const response = await languageModelsService.sendChatRequest(
+					modelId,
+					undefined,
+					conversationMessages,
+					{ tools: toolDefinitions },
+					cts.token
+				);
+
+				// Collect response parts
+				let textContent = '';
+				const toolUseParts: { type: 'tool_use'; name: string; toolCallId: string; parameters: unknown }[] = [];
+
+				for await (const part of response.stream) {
+					if (cts.token.isCancellationRequested) {
+						break;
+					}
+					const parts = Array.isArray(part) ? part : [part];
+					for (const p of parts) {
+						if (p.type === 'text') {
+							textContent += p.value;
+							progress({
+								kind: 'markdownContent',
+								content: new MarkdownString(p.value)
+							});
+						} else if (p.type === 'tool_use') {
+							toolUseParts.push(p as IChatResponseToolUsePart);
+						}
+					}
+				}
+
+				await response.result;
+
+				// If no tool calls, we're done
+				if (toolUseParts.length === 0) {
+					break;
+				}
+
+				// Add assistant message with tool calls to conversation
+				const assistantContent: IChatMessage['content'] = [];
+				if (textContent) {
+					assistantContent.push({ type: 'text' as const, value: textContent });
+				}
+				for (const tc of toolUseParts) {
+					assistantContent.push({
+						type: 'tool_use' as const,
+						name: tc.name,
+						toolCallId: tc.toolCallId,
+						parameters: tc.parameters,
+					});
+				}
+				conversationMessages.push({
+					role: ChatMessageRole.Assistant,
+					content: assistantContent,
+				});
+
+				// Execute each tool call
+				for (const toolCall of toolUseParts) {
+					const params = toolCall.parameters as Record<string, string>;
+					let toolResult = '';
+
+					try {
+						switch (toolCall.name) {
+							case 'create_file': {
+								if (!workspaceRoot) {
+									toolResult = 'Error: No workspace folder is open.';
+									break;
+								}
+								const filePath = params.path;
+								const content = params.content;
+								const fileUri = URI.joinPath(workspaceRoot, filePath);
+
+								// Ensure parent directory exists
+								const parentUri = dirname(fileUri);
+								try {
+									await fileService.createFolder(parentUri);
+								} catch { /* folder may already exist */ }
+
+								await fileService.createFile(fileUri, VSBuffer.fromString(content), { overwrite: true });
+
+								// Report the file creation via textEdit progress
+								progress({
+									kind: 'textEdit',
+									uri: fileUri,
+									edits: [],
+								});
+								progress({
+									kind: 'textEdit',
+									uri: fileUri,
+									edits: [{
+										range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 },
+										text: content,
+									}],
+								});
+								progress({
+									kind: 'textEdit',
+									uri: fileUri,
+									edits: [],
+									done: true,
+								});
+
+								toolResult = `File created successfully: ${filePath}`;
+
+								progress({
+									kind: 'progressMessage',
+									content: new MarkdownString(localize('inlineAICreatedFile', "Created file: {0}", filePath)),
+									shimmer: true,
+								});
+								break;
+							}
+
+							case 'edit_file': {
+								if (!workspaceRoot) {
+									toolResult = 'Error: No workspace folder is open.';
+									break;
+								}
+								const editPath = params.path;
+								const newContent = params.content;
+								const editUri = URI.joinPath(workspaceRoot, editPath);
+
+								// Read existing file to determine line count
+								let existingLineCount = 1;
+								try {
+									const existing = await fileService.readFile(editUri);
+									const existingText = existing.value.toString();
+									existingLineCount = existingText.split('\n').length;
+								} catch { /* file may not exist */ }
+
+								await fileService.writeFile(editUri, VSBuffer.fromString(newContent));
+
+								// Report the edit via textEdit progress
+								progress({
+									kind: 'textEdit',
+									uri: editUri,
+									edits: [],
+								});
+								progress({
+									kind: 'textEdit',
+									uri: editUri,
+									edits: [{
+										range: { startLineNumber: 1, startColumn: 1, endLineNumber: existingLineCount, endColumn: 1 },
+										text: newContent,
+									}],
+								});
+								progress({
+									kind: 'textEdit',
+									uri: editUri,
+									edits: [],
+									done: true,
+								});
+
+								toolResult = `File edited successfully: ${editPath}`;
+
+								progress({
+									kind: 'progressMessage',
+									content: new MarkdownString(localize('inlineAIEditedFile', "Edited file: {0}", editPath)),
+									shimmer: true,
+								});
+								break;
+							}
+
+							case 'read_file': {
+								if (!workspaceRoot) {
+									toolResult = 'Error: No workspace folder is open.';
+									break;
+								}
+								const readPath = params.path;
+								const readUri = URI.joinPath(workspaceRoot, readPath);
+								try {
+									const fileContent = await fileService.readFile(readUri);
+									toolResult = fileContent.value.toString();
+								} catch (e) {
+									toolResult = `Error reading file: ${readPath} - ${toErrorMessage(e)}`;
+								}
+								break;
+							}
+
+							case 'list_files': {
+								if (!workspaceRoot) {
+									toolResult = 'Error: No workspace folder is open.';
+									break;
+								}
+								const listPath = params.path || '.';
+								const listUri = URI.joinPath(workspaceRoot, listPath);
+								try {
+									const stat = await fileService.resolve(listUri);
+									if (stat.children) {
+										toolResult = stat.children.map(child => {
+											const type = child.isDirectory ? '[dir]' : '[file]';
+											return `${type} ${child.name}`;
+										}).join('\n');
+									} else {
+										toolResult = 'Directory is empty or path is a file.';
+									}
+								} catch (e) {
+									toolResult = `Error listing directory: ${listPath} - ${toErrorMessage(e)}`;
+								}
+								break;
+							}
+
+							default:
+								toolResult = `Unknown tool: ${toolCall.name}`;
+						}
+					} catch (e) {
+						toolResult = `Tool execution error: ${toErrorMessage(e)}`;
+						this.logService.error(`[chat setup] Tool ${toolCall.name} failed:`, e);
+					}
+
+					// Add tool result to conversation
+					conversationMessages.push({
+						role: ChatMessageRole.User,
+						content: [{
+							type: 'tool_result' as const,
+							toolCallId: toolCall.toolCallId,
+							value: [{ type: 'text' as const, value: toolResult }],
+						}],
+					});
+				}
+
+				// Show progress for next iteration
+				progress({
+					kind: 'progressMessage',
+					content: new MarkdownString(localize('inlineAIThinkingMore', "Thinking...")),
+					shimmer: true,
+				});
+			}
+		} catch (error) {
+			this.logService.error('[chat setup] InlineAI request failed:', error);
+			progress({
+				kind: 'warning',
+				content: new MarkdownString(localize('inlineAIRequestFailed', "Failed to get a response from the AI model. Please check your API key and try again."))
+			});
+		}
 
 		return {};
 	}

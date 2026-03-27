@@ -306,26 +306,10 @@ export class WorkbenchThemeService extends Disposable implements IWorkbenchTheme
 	}
 
 	/**
-	 * For new users who haven't explicitly configured `window.autoDetectColorScheme`,
-	 * persist `true` so that auto-detect becomes the default going forward.
+	 * Disabled: Force dark theme by default instead of auto-detecting system color scheme.
 	 */
 	private async migrateAutoDetectColorScheme(): Promise<void> {
-		if (!this.storageService.isNew(StorageScope.APPLICATION)) {
-			return;
-		}
-
-		// Ensure that user data (including synced settings) has finished initializing
-		// so we do not overwrite values that arrive via settings sync.
-		await this.userDataInitializationService.whenInitializationFinished();
-
-		const inspection = this.configurationService.inspect<boolean>(ThemeSettings.DETECT_COLOR_SCHEME);
-
-		// Treat any of userValue, userLocalValue, or userRemoteValue as an explicit configuration.
-		if (inspection.userValue === undefined
-			&& inspection.userLocalValue === undefined
-			&& inspection.userRemoteValue === undefined) {
-			await this.configurationService.updateValue(ThemeSettings.DETECT_COLOR_SCHEME, true, ConfigurationTarget.USER);
-		}
+		return;
 	}
 
 	private installConfigurationListener() {
