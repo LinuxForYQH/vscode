@@ -15,6 +15,9 @@ import { ILanguageFeaturesService } from '../../../../editor/common/services/lan
 import { ILanguageModelsService } from '../../chat/common/languageModels.js';
 import { InlineAICompletionProvider } from './inlineAICompletionProvider.js';
 import { InlineAILanguageModelProvider, INLINE_AI_VENDOR } from './inlineAILanguageModelProvider.js';
+import { OpencodeLanguageModelProvider, OPENCODE_VENDOR } from './opencodeLanguageModelProvider.js';
+import { OpencodeService, IOpencodeService } from './opencodeService.js';
+import { registerSingleton, InstantiationType } from '../../../../platform/instantiation/common/extensions.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
@@ -72,11 +75,55 @@ configurationRegistry.registerConfiguration({
 	}
 });
 
+// ─── Register OpenCode configuration settings ───────────────────────────────
+
+configurationRegistry.registerConfiguration({
+	id: 'opencode',
+	order: 201,
+	title: localize('opencode.title', "OpenCode AI"),
+	type: 'object',
+	scope: ConfigurationScope.APPLICATION,
+	properties: {
+		'opencode.enabled': {
+			type: 'boolean',
+			default: true,
+			description: localize('opencode.enabled', "Enable the OpenCode AI integration. When enabled, VS Code connects to an opencode HTTP server for AI code generation."),
+			order: 1,
+		},
+		'opencode.hostname': {
+			type: 'string',
+			default: '127.0.0.1',
+			description: localize('opencode.hostname', "Hostname of the opencode HTTP server."),
+			order: 2,
+		},
+		'opencode.port': {
+			type: 'number',
+			default: 4096,
+			description: localize('opencode.port', "Port of the opencode HTTP server."),
+			order: 3,
+		},
+		'opencode.serverUrl': {
+			type: 'string',
+			default: '',
+			description: localize('opencode.serverUrl', "Full URL of the opencode server (e.g. http://127.0.0.1:4096). When set, overrides hostname and port settings."),
+			order: 4,
+		},
+		'opencode.workspaceDirectory': {
+			type: 'string',
+			default: '',
+			description: localize('opencode.workspaceDirectory', "The workspace directory sent to the opencode server. If empty, uses the first open workspace folder."),
+			order: 5,
+		},
+	}
+});
+
 // ─── Workbench Contribution ──────────────────────────────────────────────────
 
 class InlineAIContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.inlineAI';
+
+	private _opencodeRegistered = false;
 
 	constructor(
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
@@ -87,8 +134,12 @@ class InlineAIContribution extends Disposable implements IWorkbenchContribution 
 	) {
 		super();
 		this._register(this._configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration('inlineAI')) {
+			if (e.affectsConfiguration('inlineAI') || e.affectsConfiguration('opencode')) {
 				this._logService.info('[InlineAI] Configuration changed, re-evaluating providers.');
+				// Try to register opencode provider if it wasn't registered yet
+				if (e.affectsConfiguration('opencode.enabled') && !this._opencodeRegistered) {
+					this._registerOpencodeProvider();
+				}
 			}
 		}));
 		this._registerProviders();
@@ -148,10 +199,65 @@ class InlineAIContribution extends Disposable implements IWorkbenchContribution 
 				this._logService.warn('[InlineAI] Failed to register chat provider:', e);
 			}
 		}
+
+		// ─── OpenCode Language Model Provider ────────────────────────────
+		this._registerOpencodeProvider();
+	}
+
+	private _registerOpencodeProvider(): void {
+		if (this._opencodeRegistered) {
+			return;
+		}
+
+		const opencodeEnabled = this._configurationService.getValue<boolean>('opencode.enabled');
+		if (!opencodeEnabled) {
+			this._logService.info('[OpenCode] OpenCode is disabled. Set "opencode.enabled": true to enable.');
+			return;
+		}
+
+		this._logService.info('[OpenCode] Registering OpenCode language model provider...');
+
+		// Register the opencode vendor descriptor first
+		try {
+			this._languageModelsService.deltaLanguageModelChatProviderDescriptors(
+				[{
+					vendor: OPENCODE_VENDOR,
+					displayName: 'OpenCode AI',
+					configuration: undefined,
+					managementCommand: undefined,
+					when: undefined,
+				}],
+				[]
+			);
+			this._logService.info('[OpenCode] Vendor descriptor registered.');
+		} catch (e) {
+			// Vendor might already be registered — that's OK, we can still register the provider
+			this._logService.trace('[OpenCode] Vendor registration note:', e);
+		}
+
+		// Register the opencode language model provider
+		const opencodeProvider = this._instantiationService.createInstance(OpencodeLanguageModelProvider);
+		this._register(opencodeProvider);
+		try {
+			this._register(
+				this._languageModelsService.registerLanguageModelProvider(OPENCODE_VENDOR, opencodeProvider)
+			);
+			this._opencodeRegistered = true;
+			this._logService.info('[OpenCode] Language model provider registered successfully.');
+
+			// Trigger model resolution immediately so the model appears in the picker
+			opencodeProvider.fireDidChange();
+		} catch (e) {
+			this._logService.warn('[OpenCode] Failed to register language model provider:', e);
+		}
 	}
 }
 
 registerWorkbenchContribution2(InlineAIContribution.ID, InlineAIContribution, WorkbenchPhase.AfterRestored);
+
+// ─── Register OpenCode Service Singleton ────────────────────────────────────
+
+registerSingleton(IOpencodeService, OpencodeService, InstantiationType.Delayed);
 
 // ─── Supported AI Models ────────────────────────────────────────────────────
 
