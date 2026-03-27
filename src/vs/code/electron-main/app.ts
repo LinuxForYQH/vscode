@@ -399,7 +399,7 @@ export class CodeApplication extends Disposable {
 		// Contextmenu via IPC support
 		registerContextMenuListener();
 
-		// Accessibility change event
+		// Accessibility change event from Electron
 		app.on('accessibility-support-changed', (event, accessibilitySupportEnabled) => {
 			this.windowsMainService?.sendToAll('vscode:accessibilitySupportChanged', accessibilitySupportEnabled);
 		});
